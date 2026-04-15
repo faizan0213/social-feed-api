@@ -1,0 +1,28 @@
+{
+  "name": "social-feed-api",
+  "version": "1.0.0",
+  "description": "Optimized social media feed API with Redis caching and cursor-based pagination",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "db:migrate": "psql $DATABASE_URL -f src/config/schema.sql"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "compression": "^1.8.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "nodeman": "^1.1.2",
+    "pg": "^8.20.0",
+    "redis": "^5.12.1",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
