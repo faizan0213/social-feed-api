@@ -1,237 +1,196 @@
 # Social Feed API
 
-A production-ready backend API for a social media feed — built with **Node.js + Express**, **PostgreSQL**, and **Redis** caching.
+A **performance-focused backend API** for a social media feed — built with **Node.js + Express**, **PostgreSQL**, and **Redis**.
+
+Designed to handle **high traffic scenarios**, reduce database load, and maintain **sub-200ms response times** using caching and query optimization.
+
+---
+
+## 🚀 Key Highlights
+
+* ⚡ Sub-10ms responses on cache hits
+* 🧠 Redis caching with **stampede protection**
+* 📊 Optimized SQL queries with indexing + cursor pagination
+* 🛡️ Built-in **rate limiting** for traffic control
+* 🔁 Cache invalidation for data consistency
+* 📈 Designed for **high concurrency & scalability**
 
 ---
 
 ## Features
 
-| Requirement | Implementation |
-|---|---|
-| Pagination | Cursor-based (not offset) for O(log n) page fetches |
-| Optimized DB queries | Composite indexes + single JOIN query (no N+1) |
-| Redis caching | Per-URL cache with 60s TTL; auto-invalidated on new posts |
-| Response time <200ms | Cached responses typically return in **2–10ms** |
+| Requirement               | Implementation                               |
+| ------------------------- | -------------------------------------------- |
+| Pagination                | Cursor-based (no offset, O(log n))           |
+| Optimized DB queries      | Indexed queries + JOIN (no N+1)              |
+| Redis caching             | Route-level caching with TTL + invalidation  |
+| High traffic handling     | Rate limiting + caching + connection pooling |
+| Response time <200ms      | Cached responses typically **2–10ms**        |
+| Cache stampede protection | Redis locks (SET NX EX) to avoid DB overload |
 
 ---
 
 ## Tech Stack
 
-- **Runtime:** Node.js 18+
-- **Framework:** Express 4
-- **Database:** PostgreSQL 16 (with `pg` connection pool, max 20 connections)
-- **Cache:** Redis 7 (`allkeys-lru` eviction policy)
-- **Other:** Helmet (security headers), Compression (gzip), Morgan (logging)
+* **Runtime:** Node.js 18+
+* **Framework:** Express
+* **Database:** PostgreSQL (connection pooling)
+* **Cache:** Redis
+* **Other:** Helmet, Compression, Morgan, Winston logging
 
 ---
 
-## Local Setup
+## 🧠 Performance Architecture
 
-### Prerequisites
-- Node.js 18+
-- Docker & Docker Compose (or local PostgreSQL + Redis)
+### Request Flow
 
-### 1. Clone & install
-
-```bash
-git clone https://github.com/YOUR_USERNAME/social-feed-api.git
-cd social-feed-api
-npm install
+```text
+Client → Cache (Redis)
+        ↓
+      HIT → return (2–10ms)
+        ↓
+      MISS → DB query → cache store → return
 ```
-
-### 2. Start PostgreSQL + Redis
-
-```bash
-docker-compose up -d
-```
-
-### 3. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env if your DB/Redis credentials differ
-```
-
-### 4. Run migrations + seed data
-
-```bash
-npm run db:migrate
-```
-
-This creates tables, indexes, and seeds 3 users + 150 posts.
-
-### 5. Start the server
-
-```bash
-npm run dev       # development (nodemon)
-npm start         # production
-```
-
-Server runs on `http://localhost:3000`
 
 ---
 
-## API Reference
+### 🔥 Redis Caching Strategy
 
-### `GET /api/feed/:userId`
-
-Returns paginated posts from users that `:userId` follows.
-
-**Query params:**
-
-| Param | Type | Default | Description |
-|---|---|---|---|
-| `limit` | number | 20 | Posts per page (max 50) |
-| `cursor` | string | — | Pagination cursor from previous response |
-
-**Example:**
-
-```bash
-# First page
-curl http://localhost:3000/api/feed/a0000000-0000-0000-0000-000000000001
-
-# Next page (use nextCursor from previous response)
-curl "http://localhost:3000/api/feed/a0000000-0000-0000-0000-000000000001?cursor=<nextCursor>"
-```
-
-**Response:**
-
-```json
-{
-  "data": [
-    {
-      "id": "uuid",
-      "content": "Post content here",
-      "mediaUrl": null,
-      "likeCount": 0,
-      "commentCount": 0,
-      "createdAt": "2025-01-01T10:00:00.000Z",
-      "author": {
-        "id": "uuid",
-        "username": "bob",
-        "displayName": "Bob Sharma",
-        "avatarUrl": "https://..."
-      }
-    }
-  ],
-  "pagination": {
-    "limit": 20,
-    "hasNextPage": true,
-    "nextCursor": "MjAyNS0wMS0wMVQwOTowMDowMC4wMDBa"
-  },
-  "meta": {
-    "cache": "MISS",   // or "HIT"
-    "dbTimeMs": 12,
-    "totalTimeMs": 13
-  }
-}
-```
-
-### `POST /api/posts`
-
-Create a new post. Automatically invalidates the Redis cache for all followers.
-
-```bash
-curl -X POST http://localhost:3000/api/posts \
-  -H "Content-Type: application/json" \
-  -d '{"userId": "a0000000-0000-0000-0000-000000000002", "content": "Hello world!"}'
-```
-
-### `GET /api/feed/:userId/explain`
-
-Returns PostgreSQL `EXPLAIN ANALYZE` output for the feed query — shows index usage.
-
-### `GET /health`
-
-Health check endpoint.
+* **Cache key:** Based on route + query params (userId, cursor, limit)
+* **TTL:** 60 seconds
+* **Invalidation:** On post creation (followers' feeds cleared)
+* **Graceful fallback:** If Redis fails → DB used directly
 
 ---
 
-## Performance Design
+### ⚡ Cache Stampede Protection
 
-### Why cursor-based pagination?
-
-```sql
--- ❌ OFFSET (slow at scale)
-SELECT ... ORDER BY created_at DESC LIMIT 20 OFFSET 10000;
--- DB scans 10,020 rows, discards 10,000
-
--- ✅ Cursor (always fast)
-SELECT ... WHERE created_at < $cursor ORDER BY created_at DESC LIMIT 20;
--- DB jumps directly to cursor via index
-```
-
-At 1M posts, offset pagination for page 500 would scan 10,000 rows.  
-Cursor pagination always does a single index seek — **same speed regardless of depth**.
-
-### Database indexes
-
-```sql
--- Feed query uses this index directly (covering index on the WHERE + ORDER BY)
-CREATE INDEX idx_posts_created_at ON posts (created_at DESC);
-CREATE INDEX idx_posts_user_created ON posts (user_id, created_at DESC);
-CREATE INDEX idx_follows_follower ON follows (follower_id);
-```
-
-### Avoiding N+1 queries
-
-Instead of fetching posts, then fetching each author separately (N+1), a single `JOIN` fetches everything:
-
-```sql
-SELECT p.*, u.username, u.display_name, u.avatar_url
-FROM posts p
-JOIN users u ON u.id = p.user_id
-WHERE p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
-ORDER BY p.created_at DESC
-LIMIT 20
-```
-
-### Redis caching strategy
-
-- **Cache key:** `feed:/api/feed/:userId?limit=N&cursor=X` — unique per page
-- **TTL:** 60 seconds (configurable per route)
-- **Invalidation:** When a user creates a post, all their followers' cache keys are invalidated
-- **Graceful degradation:** If Redis is down, the API falls back to DB queries without crashing
-
-### Connection pooling
+To prevent multiple requests hitting the DB on cache miss:
 
 ```js
-const pool = new Pool({ max: 20, idleTimeoutMillis: 30000 });
+SET lockKey NX EX
 ```
 
-Reusing connections eliminates TCP handshake + auth overhead on every request.
+* Only **one request fetches from DB**
+* Others wait for cached result
+* Prevents DB overload during traffic spikes
 
 ---
 
-## Benchmark Results (local)
+### 🛡️ High Traffic Handling
 
-| Scenario | Response Time |
-|---|---|
-| First request (cache MISS) | ~15–40ms |
-| Subsequent requests (cache HIT) | ~2–8ms |
-| Deep pagination (cursor, page 100) | ~15–30ms |
+* **Redis-based sliding window rate limiting**
+* Prevents abuse and traffic spikes
+* Ensures fair usage per IP
 
-> Tested with `wrk -t4 -c50 -d10s` on a MacBook M2, local Docker.
+```text
+Max 120 requests / minute per IP
+```
+---
+## 🚦 High Traffic Scenario (Example)
+
+Under heavy load (e.g., 1000 concurrent requests):
+
+- ~90% requests are served from Redis cache (fast response)
+- Only a small portion hits the database due to caching + stampede protection
+- Rate limiting prevents excessive abuse from a single client
+- Connection pooling ensures efficient DB usage
+
+Result:
+- Stable performance
+- No database overload
+- Consistent low latency
+
+### 📊 Database Optimization
+
+* Cursor-based pagination (no OFFSET)
+* Composite indexes:
+
+  * `(created_at DESC)`
+  * `(user_id, created_at DESC)`
+* JOIN queries to avoid N+1 problem
 
 ---
 
-## Project Structure
+### ⚡ Connection Pooling
+
+```js
+max: 20 connections
+```
+
+* Handles concurrent requests efficiently
+* Reduces connection overhead
+
+---
+
+## 📈 Benchmark (Local)
+
+| Scenario                        | Response Time            |
+| ------------------------------- | ------------------------ |
+| Cache MISS                      | ~15–40ms                 |
+| Cache HIT                       | ~2–10ms                  |
+| High load (50 concurrent users) | Stable with no DB spikes |
+
+---
+
+## API Endpoints
+
+### GET `/api/feed/:userId`
+
+* Paginated feed
+* Cached (60s TTL)
+
+### POST `/api/posts`
+
+* Creates post
+* Invalidates follower feed cache
+
+### GET `/health`
+
+* Checks DB + Redis status
+
+### GET `/api/feed/:userId/explain`
+
+* Returns query execution plan
+
+---
+
+## 📂 Project Structure
 
 ```
-social-feed-api/
-├── index.js                    # App entry point
-├── docker-compose.yml          # PostgreSQL + Redis
-├── .env.example
-└── src/
-    ├── config/
-    │   ├── db.js               # PG connection pool
-    │   ├── redis.js            # Redis client
-    │   └── schema.sql          # Migrations + seed data
-    ├── controllers/
-    │   └── feedController.js   # Business logic
-    ├── middleware/
-    │   └── cache.js            # Redis cache middleware
-    └── routes/
-        ├── feed.js
-        └── posts.js
+src/
+├── config/
+│   ├── db.js
+│   ├── redis.js
+├── middleware/
+│   ├── cache.js        # Redis caching + stampede protection
+│   ├── rateLimiter.js # High traffic control
+├── controllers/
+│   └── feedController.js
+├── routes/
+│   ├── feed.js
+│   └── posts.js
 ```
+
+---
+
+## 💡 Design Decisions
+
+* Used **cursor pagination** for scalability
+* Added **Redis caching** to reduce DB load
+* Implemented **rate limiting** to control traffic
+* Designed for **graceful degradation** (Redis failure safe)
+* Focused on **real-world backend performance patterns**
+
+---
+
+## 🚀 Summary
+
+This system is designed to:
+
+* Handle **high read traffic efficiently**
+* Minimize database load using caching
+* Maintain **low latency under load**
+* Provide a scalable backend foundation
+
+---
